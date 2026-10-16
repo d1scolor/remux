@@ -41,31 +41,10 @@ terminal, and uploads photos and files, with markup for images.
   then drag to place the cursor.
 - **Direct SSH**: Remux connects straight to the server, with no relay and
   no account. Passwords and private keys are stored in the iOS Keychain,
-  and trusted host keys are remembered.
+  and trusted host keys are remembered. Supports Secure Enclave ECDSA keys
+  protected by Face ID, Touch ID, or your device passcode.
 - **Themes**: Ghostty default, Catppuccin Mocha, and Catppuccin Latte,
   with adjustable font size.
-
-## Secure Enclave SSH keys
-
-In connection setup, choose **Private Key → Generate Secure Enclave key**.
-Use **Copy public key** to add it to your server's `~/.ssh/authorized_keys`,
-or **Install on Host** to install it using a one-time server password.
-
-These ECDSA P-256 keys are generated on your iPhone and require Face ID,
-Touch ID, or your device passcode for new SSH authentication. One system prompt
-handles biometrics and passcode fallback; iOS controls the scans and passcode
-screen. A failed authentication evaluation is retried once. Canceling
-unlock lets you retry without editing your SSH credentials. Existing
-connections stay usable without repeated prompts. Browsing the library and
-copying the public key do not prompt. Choose **Unlock to check sessions** or
-pull to refresh to discover sessions on a saved server. After a disconnect,
-reconnect manually to authorize a new connection.
-
-A Secure Enclave key cannot be exported, imported from another SSH key, or
-transferred to another device. A physical device with a passcode is required.
-Removing the device passcode makes the saved key unusable. If you replace or
-lose the key, install a new public key on your servers using another sign-in
-method. Removing a key in Remux does not remove its public key from servers.
 
 ## Installation
 
