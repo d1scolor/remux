@@ -245,6 +245,10 @@ struct SSHPublicKeyInstaller: Sendable {
                 username: target.username,
                 identityID: target.serverID
             )
+            let authenticationTimeout: TimeAmount? = switch credential {
+            case .password: nil
+            case .privateKey(let key): key.secureEnclaveKey != nil ? .seconds(120) : nil
+            }
             let configuration = RemuxSSHRootConfiguration(
                 host: target.host,
                 port: target.port,
@@ -257,7 +261,7 @@ struct SSHPublicKeyInstaller: Sendable {
                 },
                 hostKeyValidator: trustedHostStore.validator(for: server),
                 connectTimeout: RemuxConnectionTimeouts.publicKeyInstallSSHConnect,
-                authenticationTimeout: target.privateKey.secureEnclaveKey != nil ? .seconds(120) : nil
+                authenticationTimeout: authenticationTimeout
             )
             let trace = RemuxTransportStartupTrace(
                 flowID: "public-key-install.\(target.serverID.uuidString)"

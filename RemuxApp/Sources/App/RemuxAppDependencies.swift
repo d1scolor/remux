@@ -193,7 +193,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     func prewarmSSHConnection(for target: SessionTarget) async {
-        guard !target.sshAuth.requiresUserPresence else { return }
+        guard !target.sshAuth.requiresInteractiveAuthentication else { return }
         await sshConnectionPrewarmer(target, trustedHostStore, sshRootService)
     }
 
@@ -238,7 +238,7 @@ struct RemuxAppDependencies: Sendable {
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) async {
-        guard !target.sshAuth.requiresUserPresence else {
+        guard !target.sshAuth.requiresInteractiveAuthentication else {
             return
         }
 

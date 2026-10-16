@@ -41,9 +41,9 @@ final class SSHPrivateKeyInspectorTests: XCTestCase {
         let auth = try ResolvedSSHAuth.privateKey(username: "test", credential:
             SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key),
             identityID: UUID(), displayLabel: "test")
-        XCTAssertTrue(auth.requiresUserPresence)
+        XCTAssertTrue(auth.requiresInteractiveAuthentication)
         XCTAssertTrue(auth.authFingerprint.hasPrefix("secure-enclave:"))
-        XCTAssertFalse(ResolvedSSHAuth.password(username: "test", password: "fixture", identityID: UUID(), displayLabel: "test").requiresUserPresence)
+        XCTAssertFalse(ResolvedSSHAuth.password(username: "test", password: "fixture", identityID: UUID(), displayLabel: "test").requiresInteractiveAuthentication)
     }
 
     func testEnclaveDraftSurvivesValidationAndEditingWithoutPEM() throws {

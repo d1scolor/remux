@@ -768,7 +768,7 @@ extension ResolvedSSHAuth {
         return false
     }
 
-    var requiresUserPresence: Bool {
+    var requiresInteractiveAuthentication: Bool {
         switch credential {
         case .none: true
         case .password: false
