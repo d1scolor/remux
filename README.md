@@ -1,6 +1,10 @@
-# Remux
+# Remux for iPhone Duo
 
 > A native iOS client for tmux and herdr.
+
+This fork of [h3nock/remux](https://github.com/h3nock/remux) focuses on **iPhone Duo support**: adaptive layouts for the outer and inner displays, a compact control rail, and terminal resizing that preserves sessions and compose drafts when rotating or folding. It incorporates upstream improvements alongside the Duo work.
+
+Duo development lives on [`feature/iphone-duo-support`](https://github.com/d1scolor/remux/tree/feature/iphone-duo-support), with the changes proposed upstream in [PR #219](https://github.com/h3nock/remux/pull/219).
 
 <p align="center">
   <a href="https://trendshift.io/repositories/91075?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-91075" target="_blank" rel="noopener noreferrer">
@@ -11,7 +15,7 @@
 https://github.com/user-attachments/assets/e7482322-15f8-4f7d-aca4-83368fddd07c
 
 <p align="center">
-  <a href="https://testflight.apple.com/join/fHqG1ruE">Join the beta on TestFlight</a>
+  <a href="https://testflight.apple.com/join/fHqG1ruE">Try upstream Remux on TestFlight</a>
 </p>
 
 ## About
@@ -38,7 +42,7 @@ Remux connects to your servers over SSH and attaches to the tmux and herdr sessi
 
 ## Install
 
-Remux is in public beta on TestFlight: [join the beta](https://testflight.apple.com/join/fHqG1ruE). It's open source under the MIT license, so you can also build it yourself.
+Build this fork from source using the instructions below to use its iPhone Duo changes. The upstream Remux app is available separately on [TestFlight](https://testflight.apple.com/join/fHqG1ruE). Remux is open source under the MIT license.
 
 ## Building from source
 
