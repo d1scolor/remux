@@ -80,15 +80,16 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let sendFinishedText: (String) -> Bool
     let sendPaste: (String) -> Bool
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
+    let sendCursorKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let isModifierArmed: () -> Bool
-    let onTrackpadFeedbackChange: (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void
     let onFirstResponderChange: (Bool) -> Void
 
     /// `inputSurface` is the surface the focused input operations reach now, nil while they would
     /// be refused; a composition is drawn on it and stays with it. `sendText` sends what the
     /// keyboard commits, with an armed modifier applied. `sendFinishedText` sends a draft an app
-    /// action finishes while preserving the modifier for that action. `isModifierArmed` tells
-    /// whether `sendText` would apply a modifier to the next text.
+    /// action finishes while preserving the modifier for that action. `sendCursorKeyEvent` sends the
+    /// space bar's cursor arrows, which leave an armed modifier for the next key. `isModifierArmed`
+    /// tells whether `sendText` would apply a modifier to the next text.
     init(
         isEnabled: Bool,
         wantsFirstResponder: Bool,
@@ -101,8 +102,8 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         sendFinishedText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
+        sendCursorKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)? = nil,
         isModifierArmed: @escaping () -> Bool = { false },
-        onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void,
         onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.isEnabled = isEnabled
@@ -116,8 +117,8 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         self.sendFinishedText = sendFinishedText
         self.sendPaste = sendPaste
         self.sendKeyEvent = sendKeyEvent
+        self.sendCursorKeyEvent = sendCursorKeyEvent ?? sendKeyEvent
         self.isModifierArmed = isModifierArmed
-        self.onTrackpadFeedbackChange = onTrackpadFeedbackChange
         self.onFirstResponderChange = onFirstResponderChange
     }
 
@@ -140,8 +141,8 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
             sendFinishedText: { sendFinishedText(GhosttyTerminalInputNormalizer.normalize($0)) },
             sendPaste: sendPaste,
             sendKeyEvent: sendKeyEvent,
+            sendCursorKeyEvent: sendCursorKeyEvent,
             isModifierArmed: isModifierArmed,
-            onTrackpadFeedbackChange: onTrackpadFeedbackChange,
             onFirstResponderChange: onFirstResponderChange
         )
     }
@@ -206,8 +207,14 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var sendFinishedTextHandler: ((String) -> Bool)?
     private var sendPasteHandler: ((String) -> Bool)?
     private var sendKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
+    private var sendCursorKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
     private var modifierArmedProvider: () -> Bool = { false }
-    private var trackpadFeedbackHandler: ((GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void)?
+    /// The space bar's drag: where iOS's cursor point started, in this view, and where the thumb is taken to be, in
+    /// the window. iOS reports a cursor point, not the thumb, so the thumb starts at the space bar and moves as the
+    /// point does.
+    private var floatingCursorStart: (point: CGPoint, thumb: CGPoint)?
+    /// How far the space bar sits above the window's bottom safe area.
+    private static let spaceBarRise: CGFloat = 30
     private var firstResponderStateHandler: ((Bool) -> Void)?
     private var lastReportedFirstResponderState: Bool?
     private let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
@@ -235,8 +242,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         sendFinishedText: ((String) -> Bool)? = nil,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
+        sendCursorKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)? = nil,
         isModifierArmed: @escaping () -> Bool = { false },
-        onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void = { _ in },
         onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
     ) {
         let wasInputEnabled = self.isInputEnabled
@@ -267,8 +274,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         self.sendFinishedTextHandler = sendFinishedText ?? sendText
         self.sendPasteHandler = sendPaste
         self.sendKeyEventHandler = sendKeyEvent
+        self.sendCursorKeyEventHandler = sendCursorKeyEvent ?? sendKeyEvent
         self.modifierArmedProvider = isModifierArmed
-        self.trackpadFeedbackHandler = onTrackpadFeedbackChange
         self.firstResponderStateHandler = onFirstResponderChange
 
         if isFirstResponder, previousKeyboardAppearance != keyboardAppearance {
@@ -663,14 +670,17 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         guard isInputEnabled else { return }
         // The trackpad steers the terminal's cursor, so a draft is finished first.
         guard resolveComposition(for: .finish(preservingModifiers: true)) != .refused else { return }
+        let thumb = window.map {
+            CGPoint(x: $0.bounds.midX, y: $0.bounds.maxY - $0.safeAreaInsets.bottom - Self.spaceBarRise)
+        } ?? point
+        floatingCursorStart = (point, thumb)
         trackpadDriver.begin(
             owner: self,
-            at: point,
+            at: thumb,
+            edges: window.map(GhosttyKeyboardCursorTrackpadDriver.edges(of:)),
+            source: .spaceBar,
             sendKeyEvent: { [weak self] event in
-                self?.sendKeyEventHandler?(event) == true
-            },
-            onFeedbackChange: { [weak self] state in
-                self?.trackpadFeedbackHandler?(state)
+                self?.sendCursorKeyEventHandler?(event) == true
             }
         )
         GhosttyRuntimeTrace.flowEventIfActive(
@@ -684,11 +694,15 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     }
 
     func updateFloatingCursor(at point: CGPoint) {
-        guard isInputEnabled else { return }
-        _ = trackpadDriver.update(owner: self, at: point)
+        guard isInputEnabled, let start = floatingCursorStart else { return }
+        trackpadDriver.update(
+            owner: self,
+            at: CGPoint(x: start.thumb.x + point.x - start.point.x, y: start.thumb.y + point.y - start.point.y)
+        )
     }
 
     func endFloatingCursor() {
+        floatingCursorStart = nil
         guard trackpadDriver.end(owner: self) != nil else { return }
         GhosttyRuntimeTrace.flowEventIfActive(
             "terminal.input",
@@ -701,6 +715,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     }
 
     func cancelTrackpadGestureIfActive(reason: String) {
+        floatingCursorStart = nil
         guard trackpadDriver.cancel(owner: self) else { return }
         GhosttyRuntimeTrace.flowEventIfActive(
             "terminal.input",
@@ -1009,7 +1024,8 @@ enum GhosttyTerminalHardwareCommandMapping {
             return nil
         }
 
-        return .text(translated)
+        // Option with Control is Meta: ESC before the control character, as a terminal sends Ctrl+Alt+letter.
+        return .text(modifiers.contains(.alternate) ? "\u{1B}" + translated : translated)
     }
 
     static func resolveHardwarePress(
@@ -1043,8 +1059,7 @@ enum GhosttyTerminalHardwareCommandMapping {
     }
 
     private static func supportsControlTextTranslation(modifiers: UIKeyModifierFlags) -> Bool {
-        guard modifiers.contains(.control) else { return false }
-        return !modifiers.contains(.command) && !modifiers.contains(.alternate)
+        modifiers.contains(.control) && !modifiers.contains(.command)
     }
 
     private static func ghosttyModifiers(from modifiers: UIKeyModifierFlags) -> GhosttySurfaceKeyEvent.Mods {

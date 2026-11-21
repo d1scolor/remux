@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import SwiftUI
 import UIKit
@@ -16,12 +17,14 @@ struct GhosttySurfaceScreenPresentation: Equatable {
 }
 
 struct GhosttyAttachmentInputOwnerProjection: Equatable {
+    let isCameraPresented: Bool
     let isPhotosPickerPresented: Bool
     let isFileImporterPresented: Bool
     let isPreviewPresented: Bool
 
     var isTransientInputOwnerPresented: Bool {
-        isPhotosPickerPresented
+        isCameraPresented
+            || isPhotosPickerPresented
             || isFileImporterPresented
             || isPreviewPresented
     }
@@ -72,6 +75,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let shortcutStore: ShortcutStore
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
+    /// The toolbar key page on show, kept while the keyboard, composer or find bar come and go.
+    @State private var toolbarKeyPage = 0
     @State private var keyboardResponderHandoff = GhosttyKeyboardResponderHandoff()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
     @State private var isFindPresented = false
@@ -93,10 +98,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var keyboardViewportTransitionCoordinator = GhosttyKeyboardViewportTransitionCoordinator()
     @State private var topologyActionInputRefocusCoordinator = GhosttyTopologyActionInputRefocusCoordinator()
     @State private var trackpadDriver = GhosttyKeyboardCursorTrackpadDriver()
-    @State private var trackpadFeedback = GhosttyKeyboardCursorTrackpad.FeedbackState.hidden
     @State private var isShortcutPalettePresented = false
     @State private var isShortcutsSettingsPresented = false
     @State private var shortcutEditorRequest: ShortcutEditorRequest?
+    @State private var isAttachmentCameraPresented = false
     @State private var isAttachmentPhotosPickerPresented = false
     @State private var isAttachmentFileImporterPresented = false
     @State private var attachmentPhotoSelections: [PhotosPickerItem] = []
@@ -276,8 +281,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         isEnabled: interactionProjection.isInputAvailable,
                         isInteractionLocked: composer.isSubmitting,
                         isCompact: chrome.isCompact,
-                        isControlArmed: terminalInputController.isControlArmed,
+                        armedModifiers: terminalInputController.armedModifiers,
                         toolbarKeys: presentation.toolbarKeys,
+                        toolbarKeyPage: $toolbarKeyPage,
+                        isOnScreen: isSelected && !isTerminalCovered,
                         topLevelNoun: model.topLevelNoun,
                         selectedWindowIndex: interactionProjection.selectedWindowIndex,
                         windowCount: interactionProjection.windowCount,
@@ -293,7 +300,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         onShowPanes: showPanes,
                         onOpenComposer: openComposer,
                         onToggleKeyboard: toggleKeyboardChrome,
-                        onToggleControl: toggleControlModifier,
+                        onToggleModifier: toggleModifier,
                         onShowShortcuts: showShortcutPalette,
                         sendKey: performToolbarKey,
                         composerContent: { selectedComposerBar() },
@@ -347,7 +354,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 ) != .refused else { return false }
                                 return model.sendKeyEvent(event, to: surfaceID).isAccepted
                             },
-                            onTrackpadFeedbackChange: { trackpadFeedback = $0 },
                             isMouseCaptured: { surfaceID in
                                 model.isMouseCaptured(for: surfaceID)
                             },
@@ -392,9 +398,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             sendText: { sendTerminalText($0) },
                             sendFinishedText: { sendTerminalText($0, appliesModifiers: false) },
                             sendPaste: sendTerminalPaste,
-                            sendKeyEvent: sendTerminalKeyEvent,
-                            isModifierArmed: { terminalInputController.isControlArmed },
-                            onTrackpadFeedbackChange: { trackpadFeedback = $0 },
+                            sendKeyEvent: { sendTerminalKeyEvent($0) },
+                            // Moving the cursor isn't the next key: an armed modifier waits for the key that is, as
+                            // the iOS keyboard keeps a tapped Shift through the same drag.
+                            sendCursorKeyEvent: { sendTerminalKeyEvent($0, appliesModifiers: false) },
+                            isModifierArmed: { !terminalInputController.armedModifiers.isEmpty },
                             onFirstResponderChange: { isTerminalResponderFirstResponder = $0 }
                         )
                         .frame(
@@ -459,10 +467,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onTrustHostKey: onTrustHostKey
                         )
                     }
-                    .overlay(alignment: .topTrailing) {
-                        GhosttyKeyboardCursorTrackpadHUD(state: trackpadFeedback)
-                            .padding(.top, 12)
-                            .padding(.trailing, 12)
+                    .overlay {
+                        GhosttyKeyboardCursorTrackpadStick(feedback: trackpadDriver.feedback)
                     }
                     .onAppear {
                         traceTerminalViewportSnapshot(
@@ -782,12 +788,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .sheet(item: $attachmentPreviewRequest) { request in
                 GhosttyAttachmentPreviewSheet(
                     attachments: composerAttachmentsBinding,
-                    initiallySelectedAttachmentID: request.attachmentID
+                    initiallySelectedAttachmentID: request.attachmentID,
+                    onRemove: removePendingAttachment
                 )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .remuxSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
+            }
+            .fullScreenCover(isPresented: $isAttachmentCameraPresented) {
+                GhosttyAttachmentCameraPicker(onFinish: handleAttachmentCameraCapture)
+                    .ignoresSafeArea()
             }
             .photosPicker(
                 isPresented: $isAttachmentPhotosPickerPresented,
@@ -901,6 +912,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private var isAttachmentInputOwnerPresented: Bool {
         GhosttyAttachmentInputOwnerProjection(
+            isCameraPresented: isAttachmentCameraPresented,
             isPhotosPickerPresented: isAttachmentPhotosPickerPresented,
             isFileImporterPresented: isAttachmentFileImporterPresented,
             isPreviewPresented: attachmentPreviewRequest != nil
@@ -937,8 +949,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             GhosttyComposeBar(
                 composer: composer,
                 canSubmit: isTerminalInputAvailable,
-                wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
-                    && inputCoordinator.keyboardOwner == .composer,
+                wantsKeyboardFocus: GhosttyComposerResponderFocusPolicy(
+                    keyboardMode: inputCoordinator.keyboardMode,
+                    keyboardOwner: inputCoordinator.keyboardOwner,
+                    isTransientInputOwnerPresented: isTransientInputOwnerPresented
+                ).wantsFirstResponder,
                 isSoftwareKeyboardVisible: inputCoordinator.keyboardMode == .system
                     && inputCoordinator.keyboardOwner == .composer
                     && softwareKeyboardOverlapHeight > 0,
@@ -950,6 +965,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
                 onDismissKeyboard: dismissComposerKeyboard,
                 onClose: closeComposer,
+                onTakePhoto: attachmentCameraAction,
                 onChoosePhotos: openAttachmentPhotosPicker,
                 onChooseFiles: openAttachmentFilePicker,
                 onOpenAttachment: showPendingAttachmentPreview,
@@ -1468,7 +1484,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        isShortcutPalettePresented = false
+                        withAnimation(.easeOut(duration: 0.18)) { isShortcutPalettePresented = false }
                     }
 
                 ShortcutPalette(
@@ -1498,7 +1514,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 8)
             }
-            .transition(.opacity)
+            // Grows out of the bottom leading corner, where the first key sits, as an iOS menu grows out of the
+            // button touched.
+            .transition(.scale(scale: 0.6, anchor: .bottomLeading).combined(with: .opacity))
         }
     }
 
@@ -1532,6 +1550,32 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func retryPendingAttachment(_ attachmentID: GhosttyPendingAttachment.ID) {
         composer.retryAttachment(attachmentID)
+    }
+
+    private var attachmentCameraAction: (() -> Void)? {
+        guard GhosttyAttachmentCameraPicker.isCameraAvailable else { return nil }
+        return openAttachmentCamera
+    }
+
+    private func openAttachmentCamera() {
+        Task { @MainActor in
+            // Asked here so a refusal gets an explanation; the camera would otherwise open on a black screen.
+            guard await AVCaptureDevice.requestAccess(for: .video) else {
+                presentAttachmentNotice("Camera access is off. Turn it on in Settings.")
+                return
+            }
+            isAttachmentCameraPresented = true
+        }
+    }
+
+    private func handleAttachmentCameraCapture(_ image: UIImage?) {
+        isAttachmentCameraPresented = false
+        guard let image else { return }
+
+        withAnimation(.easeOut(duration: 0.16)) {
+            composer.addCapturedPhoto(image, preparing: attachmentTransferServiceFactory())
+            attachmentNotice = nil
+        }
     }
 
     private func openAttachmentPhotosPicker() {
@@ -1600,13 +1644,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let pasteboard = UIPasteboard.general
 
         if pasteboard.hasImages {
-            guard let request = GhosttyAttachmentPasteboardSnapshot.currentImageProviderRequest()
-            else {
+            guard let image = GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard) else {
                 presentAttachmentNotice("Couldn’t paste the image.")
                 return false
             }
             withAnimation(.easeOut(duration: 0.16)) {
-                composer.addPastedImage(request, preparing: attachmentTransferServiceFactory())
+                composer.addPastedImage(image, preparing: attachmentTransferServiceFactory())
                 attachmentNotice = nil
             }
             return true
@@ -1648,8 +1691,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func showShortcutPalette() {
-        terminalInputController.clearControl()
-        isShortcutPalettePresented = true
+        terminalInputController.clearModifiers()
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { isShortcutPalettePresented = true }
     }
 
     private func executeShortcut(_ shortcut: Shortcut) {
@@ -1660,7 +1703,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         Task { @MainActor in
             let executor = ShortcutExecutor(
                 sendText: { sendTerminalText($0) },
-                sendKey: sendTerminalKeyEvent
+                sendKey: { sendTerminalKeyEvent($0) }
             )
             if await executor.execute(shortcut) {
                 isShortcutPalettePresented = false
@@ -1668,23 +1711,26 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    private func toggleControlModifier() {
-        // Ctrl arms for what comes next, so a draft typed before it is finished first.
-        if !terminalInputController.isControlArmed,
+    private func toggleModifier(_ modifier: ShortcutModifiers) {
+        // A modifier arms for what comes next, so a draft typed before it is finished first.
+        let arms = !terminalInputController.armedModifiers.contains(modifier)
+        if arms,
            keyboardResponderHandoff.resolveTerminalComposition(
                for: .finish(preservingModifiers: true)
            ) == .refused {
             return
         }
-        terminalInputController.toggleControl()
-        if terminalInputController.isControlArmed, inputCoordinator.keyboardMode == .hidden {
+        terminalInputController.toggleModifier(modifier)
+        // Control and Alt usually go with a letter, so they bring up the keyboard. Shift doesn't: the
+        // keyboard has its own Shift for letters, so a toolbar Shift is for a toolbar key or Return.
+        if arms, modifier != .shift, inputCoordinator.keyboardMode == .hidden {
             showSystemKeyboard()
         }
     }
 
     /// A toolbar key settles the keyboard's draft first: Return confirms it and Escape cancels it,
     /// either without reaching the terminal; Backspace and Delete do nothing while it is open; any
-    /// other key finishes it, keeping an armed Ctrl for the key itself. Without a draft the key goes
+    /// other key finishes it, keeping the armed modifiers for the key itself. Without a draft the key goes
     /// to the terminal.
     private func performToolbarKey(_ event: GhosttySurfaceKeyEvent) -> Bool {
         let (action, consumesDraft): (GhosttyTerminalCompositionAction, Bool) = switch event.keyCode {
@@ -1699,8 +1745,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         case .noDraft:
             return sendTerminalKeyEvent(event)
         case .canceled:
-            // Ctrl was armed for the draft that is gone, not for whatever comes next.
-            terminalInputController.clearControl()
+            // The modifiers were armed for the draft that is gone, not for whatever comes next.
+            terminalInputController.clearModifiers()
         case .finished, .kept:
             break
         }
@@ -1887,7 +1933,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 ),
                 makeAttachmentTransferService: attachmentTransferServiceFactory,
                 prepareTerminalInput: {
-                    terminalInputController.clearControl()
+                    terminalInputController.clearModifiers()
                     scrollComposerDestinationToBottom(surfaceID)
                 },
                 sendPaste: { text in
@@ -1939,10 +1985,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         model.terminalManagedSurfaceLookup.managedSurface(for: surfaceID)?.scrollViewportToBottom()
     }
 
-    private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent) -> Bool {
+    private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent, appliesModifiers: Bool = true) -> Bool {
         guard !isFindPresented, !isReadingAfterFind else { return false }
         return terminalInputController.performKeyEvent(
             event,
+            appliesModifiers: appliesModifiers,
             submitPendingPrefix: submitTerminalText(_:),
             sendKey: { event in
                 let start = GhosttyRuntimeTrace.nowNanos()
@@ -2009,7 +2056,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func railKeyButton(_ key: TerminalToolbarKey, index: Int, isEnabled: Bool) -> some View {
-        let isActive = key == .control && terminalInputController.isControlArmed
+        let isActive = key.modifier.map(terminalInputController.armedModifiers.contains) ?? false
         let onLongPress: (() -> Void)? = index == 0 ? { showShortcutPalette() } : nil
         return GhosttyKeyboardKeyButton(
             title: key.toolbarTitle,
@@ -2020,17 +2067,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             fontSize: 12,
             width: 34,
             height: 40,
-            isActive: isActive,
+            isArmed: isActive,
             isEnabled: isEnabled,
             onLongPress: onLongPress,
             hapticsOnActivation: true
         ) {
-            if key == .control {
-                toggleControlModifier()
+            if let modifier = key.modifier {
+                toggleModifier(modifier)
                 return true
             }
             guard let keyCode = key.shortcutKey?.ghosttyKeyCode else { return false }
-            return performToolbarKey(.init(keyCode: keyCode))
+            return performToolbarKey(.init(keyCode: keyCode, mods: key.shortcutModifiers.ghosttyModifiers))
         }
     }
 
@@ -2106,6 +2153,23 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "beginTransition": "\(projection.shouldBeginViewportTransition)",
             ]
         )
+        // UIKit also posts these with the keyboard where it already rests, for one many times a second while a menu
+        // is open. Such a notification changes nothing; acting on it would redraw the screen, and with a menu open
+        // the redraw makes UIKit post again.
+        if projection.isVisible,
+           projection.overlapHeight == softwareKeyboardOverlapHeight,
+           !terminalViewportCoordinator.isKeyboardTransitionActive,
+           !isAwaitingSystemKeyboardPresentation {
+            var updatedCoordinator = inputCoordinator
+            updatedCoordinator.updateSoftwareKeyboardVisibility(
+                true,
+                isInputCovered: isTerminalInputCovered || isFindPresented || isReadingAfterFind
+            )
+            if updatedCoordinator == inputCoordinator {
+                GhosttyRuntimeTrace.perf("kbd.visibility unchanged overlap=\(projection.overlapHeight)")
+                return
+            }
+        }
         GhosttyRuntimeTrace.perf(
             "kbd.visibility visible=\(projection.isVisible) overlap=\(projection.overlapHeight) duration_ms=\(String(format: "%.3f", projection.animationDuration * 1000)) fallback_ms=\(String(format: "%.3f", projection.fallbackDelay * 1000)) beginTransition=\(projection.shouldBeginViewportTransition) awaitingSystem=\(isAwaitingSystemKeyboardPresentation) frame=\(Int(frameEnd.origin.x)),\(Int(frameEnd.origin.y)),\(Int(frameEnd.width)),\(Int(frameEnd.height))"
         )
@@ -2486,7 +2550,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isReadingAfterFind = true
         isFindPresented = true; findSurfaceID = surfaceID
         findQuery = ""; findWantsKeyboard = false
-        terminalInputController.clearControl()
+        terminalInputController.clearModifiers()
         _ = terminalInputController.flushPendingTmuxPrefixInput()
         inputCoordinator.dismissKeyboard()
         if let effect = topologyActionInputRefocusCoordinator.cancelForCommandFailure() {

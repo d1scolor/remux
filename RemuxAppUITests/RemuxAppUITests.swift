@@ -1030,6 +1030,7 @@ final class RemuxAppUITests: XCTestCase {
         let closeButton = app.buttons["terminal.composer.toggle"]
         let micButton = app.buttons["terminal.composer.mic"]
         let sendButton = app.buttons["terminal.composer.send"]
+        XCTAssertEqual(attachmentButton.label, "Add attachment")
         XCTAssertLessThanOrEqual(composerField.frame.maxY, attachmentButton.frame.minY)
         XCTAssertEqual(attachmentButton.frame.midY, closeButton.frame.midY, accuracy: 1)
         XCTAssertEqual(attachmentButton.frame.midY, micButton.frame.midY, accuracy: 1)
@@ -1042,6 +1043,257 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(keyboard.exists)
         XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 1))
         attachScreenshot(named: "composer-multiline-keyboard-stable")
+    }
+
+    func testComposerAttachmentMenuOpensWithKeyboardUpAndKeepsIt() {
+        launchSeededSimulatorTerminal()
+        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
+        hideKeyboardIfPresent()
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+        let composerField = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        composerField.tap()
+        XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 3))
+
+        let attachmentButton = app.buttons["terminal.composer.attachments"]
+        let photosRow = app.buttons["terminal.composer.attachments.photos"]
+        let filesRow = app.buttons["terminal.composer.attachments.files"]
+        let keyboard = app.keyboards.firstMatch
+        let composerBounds = app.descendants(matching: .any)["terminal.composer.bounds"].firstMatch
+
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        XCTAssertEqual(photosRow.label, "Photos")
+        XCTAssertEqual(filesRow.label, "Files")
+        XCTAssertLessThan(photosRow.frame.maxY, filesRow.frame.maxY)
+        XCTAssertTrue(keyboard.exists, "Opening the menu must leave the keyboard up.")
+        attachScreenshot(named: "composer-attachment-menu-keyboard-up")
+
+        // On iOS 26 and 27 the app's own menu hangs below the composer over the keyboard, and a touch on the keys
+        // closes it and types nothing. On other versions the + opens Apple's standard menu.
+        if Self.showsTheAppsOwnAttachmentMenu {
+            XCTAssertEqual(
+                filesRow.frame.minX,
+                composerBounds.frame.minX,
+                accuracy: 1,
+                "The menu starts at the composer's left edge."
+            )
+            XCTAssertGreaterThan(
+                filesRow.frame.maxY,
+                composerBounds.frame.maxY,
+                "The menu hangs below the composer."
+            )
+            keyboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
+            XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2))
+            XCTAssertTrue(
+                app.staticTexts["terminal.composer.placeholder"].exists,
+                "The key under the touch must not type."
+            )
+            XCTAssertTrue(keyboard.exists)
+            attachmentButton.tap()
+            XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        }
+
+        // A tap or a drag on the terminal closes it too.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2)).tap()
+        XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(keyboard.exists)
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        let terminalDrag = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        terminalDrag.press(forDuration: 0.05, thenDragTo: terminalDrag.withOffset(CGVector(dx: 0, dy: 120)))
+        XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2), "A drag outside the menu closes it.")
+        XCTAssertTrue(keyboard.exists)
+
+        // Photos opens the picker; cancelling it gives the keyboard back to the composer.
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        photosRow.tap()
+        let cancelPicker = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancelPicker.waitForExistence(timeout: 10))
+        cancelPicker.tap()
+        XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 5))
+        XCTAssertFalse(photosRow.exists)
+
+        // With the keyboard down the menu is drawn in the composer, above the bottom of the screen, and a tap on the
+        // terminal closes it without bringing the keyboard back.
+        let handle = app.descendants(matching: .any)["terminal.composer.keyboard-dismiss"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 3))
+        let dragStart = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 14)))
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "attachment menu, keyboard down"))
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        XCTAssertLessThanOrEqual(filesRow.frame.maxY, app.frame.maxY, "The menu fits above the bottom of the screen.")
+        if Self.showsTheAppsOwnAttachmentMenu {
+            XCTAssertEqual(filesRow.frame.minX, composerBounds.frame.minX, accuracy: 1)
+        }
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2)).tap()
+        XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2))
+        XCTAssertFalse(isSoftwareKeyboardOnScreen(keyboard), "Closing the menu leaves the keyboard down.")
+    }
+
+    /// The iOS versions on which the app draws its own attachment menu (`GhosttyKeyboardWindowTracker.isSupported`).
+    private static var showsTheAppsOwnAttachmentMenu: Bool {
+        if #available(iOS 28.0, *) { return false }
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
+
+    /// The viewer acts on the attachment it shows: opening a chip shows that attachment, markup keeps it in view, and
+    /// Remove takes out the one in view. The picture on screen is read from a screenshot, since the selection alone
+    /// can name one attachment while another is shown.
+    func testAttachmentViewerActsOnTheAttachmentItShows() {
+        launchSeededSimulatorTerminal()
+        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
+        hideKeyboardIfPresent()
+        app.buttons["terminal.composer.toggle"].tap()
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText("draft")
+        pasteSolidPicture(.red, into: field)
+        pasteSolidPicture(.blue, into: field)
+
+        let chips = app.buttons.matching(NSPredicate(format: "label == %@", "Preview Pasted image"))
+        XCTAssertTrue(waitForCount(of: chips, toBe: 2, timeout: 10))
+        // Compared after the viewer closes; what typing put there is not this test's concern.
+        let draft = field.value as? String
+        let secondChip = chips.element(boundBy: 1)
+        XCTAssertTrue(waitUntil(secondChip, isEnabled: true, timeout: 10))
+        secondChip.tap()
+        let markup = app.buttons["terminal.attachments.preview.markup-selected"]
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue, "Opening the second chip shows the second picture.")
+
+        let pager = app.descendants(matching: .any)["terminal.attachments.preview.pager"].firstMatch
+        pager.swipeRight()
+        XCTAssertTrue(waitForSolidPicture(.red, timeout: 8), "Swiping right shows the first picture.")
+        pager.swipeLeft()
+        XCTAssertTrue(waitForSolidPicture(.blue, timeout: 8), "Swiping left shows the second picture again.")
+
+        markup.tap()
+        let cancel = app.buttons["terminal.attachments.markup.cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.tap()
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue, "Cancelling markup keeps the same picture in view.")
+
+        // A stroke away from the middle, saved.
+        let canvas = app.descendants(matching: .any)["terminal.attachments.markup.canvas"]
+        let undo = app.buttons["terminal.attachments.markup.undo"]
+        let done = app.buttons["terminal.attachments.markup.done"]
+        markup.tap()
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        drawStroke(on: canvas)
+        XCTAssertTrue(waitUntil(undo, isEnabled: true, timeout: 3), "A stroke can be undone.")
+        attachScreenshot(named: "attachment-markup-palette")
+        done.tap()
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue, "Saving markup keeps the same picture in view.")
+
+        // Undo reaches only this markup's strokes: not the one saved before, nor the draft typed before it.
+        markup.tap()
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        drawStroke(on: canvas)
+        XCTAssertTrue(waitUntil(undo, isEnabled: true, timeout: 3))
+        undo.tap()
+        XCTAssertTrue(
+            waitUntil(undo, isEnabled: false, timeout: 3),
+            "With its one stroke undone, markup has nothing left to undo."
+        )
+        done.tap()
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue)
+
+        app.buttons["terminal.attachments.preview.remove"].tap()
+        XCTAssertTrue(waitForCount(of: app.buttons.matching(identifier: "terminal.attachments.preview.thumbnail"), toBe: 0, timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .red, "Remove takes out the picture in view and shows the other.")
+        app.buttons["terminal.attachments.preview.close"].firstMatch.tap()
+        XCTAssertTrue(waitForCount(of: chips, toBe: 1, timeout: 5))
+        XCTAssertEqual(field.value as? String, draft, "The viewer leaves the draft as it was.")
+    }
+
+    private enum SolidPicture: Equatable {
+        case red, blue
+
+        var color: UIColor {
+            switch self {
+            case .red: UIColor(red: 1, green: 0, blue: 0, alpha: 1)
+            case .blue: UIColor(red: 0, green: 0, blue: 1, alpha: 1)
+            }
+        }
+    }
+
+    /// Pastes a solid picture with the field's own Paste, as a person would.
+    private func pasteSolidPicture(_ picture: SolidPicture, into field: XCUIElement) {
+        let png = UIGraphicsImageRenderer(size: CGSize(width: 400, height: 300)).pngData { context in
+            picture.color.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 400, height: 300))
+        }
+        UIPasteboard.general.setData(png, forPasteboardType: "public.png")
+        field.press(forDuration: 1.0)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+    }
+
+    /// Which solid picture fills the middle of the screen, or nil for anything else.
+    private func solidPictureInView() -> SolidPicture? {
+        let screenshot = XCUIScreen.main.screenshot().image
+        guard let image = screenshot.cgImage else { return nil }
+        let center = CGRect(x: image.width / 2, y: image.height / 2, width: 1, height: 1)
+        guard let pixel = image.cropping(to: center) else { return nil }
+        var rgba = [UInt8](repeating: 0, count: 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            return true
+        }
+        guard drawn else { return nil }
+        let (red, blue) = (Int(rgba[0]), Int(rgba[2]))
+        if red > 180, blue < 80 { return .red }
+        if blue > 180, red < 80 { return .blue }
+        return nil
+    }
+
+    /// A short stroke on the left of the picture, which fills the width of the screen in the middle of it, clear of
+    /// the middle the picture checks read.
+    private func drawStroke(on canvas: XCUIElement) {
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.42))
+            .press(forDuration: 0.1, thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.46)))
+    }
+
+    private func waitUntil(_ element: XCUIElement, isEnabled: Bool, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists, element.isEnabled == isEnabled { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return element.exists && element.isEnabled == isEnabled
+    }
+
+    private func waitForSolidPicture(_ picture: SolidPicture, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if solidPictureInView() == picture { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        return solidPictureInView() == picture
+    }
+
+    private func waitForCount(of query: XCUIElementQuery, toBe count: Int, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if query.count == count { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return query.count == count
     }
 
     func testCanKeepMultipleSimulatorSessionsActive() {
@@ -1150,6 +1402,133 @@ final class RemuxAppUITests: XCTestCase {
         attachScreenshot(named: "settings-shortcuts-shared-chrome")
     }
 
+    func testToolbarKeyPagesSwipeArmAndOpenShortcuts() {
+        launchSeededSimulatorTerminal()
+
+        let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        XCTAssertEqual(keys.prefix(3).map { $0.label }, ["Control", "Escape", "Tab"])
+        XCTAssertTrue(isOnShownKeyPage(keys[0]))
+        XCTAssertFalse(isOnShownKeyPage(keys[3]))
+        attachScreenshot(named: "toolbar-key-pages-1-keyboard-hidden")
+
+        // A swipe that starts on a key changes page instead of pressing it.
+        swipeToolbarKeys(from: keys[1], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        XCTAssertEqual(keys.suffix(3).map { $0.label }, ["Shift-Tab", "Shift", "Alt"])
+        XCTAssertFalse(isOnShownKeyPage(keys[0]))
+        attachScreenshot(named: "toolbar-key-pages-2-keyboard-hidden")
+
+        keys[4].tap()
+        XCTAssertEqual(keys[4].value as? String, "Armed")
+        attachScreenshot(named: "toolbar-key-pages-2-shift-armed")
+        swipeToolbarKeys(from: keys[3], toLeft: false)
+        XCTAssertTrue(waitUntilOnShownPage(keys[0]))
+        swipeToolbarKeys(from: keys[0], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        keys[4].tap()
+        XCTAssertNotEqual(keys[4].value as? String, "Armed")
+
+        // Alt brings the keyboard up, as Control does.
+        keys[5].tap()
+        XCTAssertEqual(keys[5].value as? String, "Armed")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        keys[5].tap()
+        swipeToolbarKeys(from: keys[4], toLeft: false)
+        XCTAssertTrue(waitUntilOnShownPage(keys[0]))
+
+        // Every page's first key opens Shortcuts when held.
+        swipeToolbarKeys(from: keys[1], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        keys[3].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
+        XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
+        attachScreenshot(named: "toolbar-key-pages-2-first-key-shortcuts")
+    }
+
+    /// A swipe that starts on any key of the page turns the page and presses nothing: the key's press feedback starts
+    /// at touch-down, and the swipe still belongs to the page scroll view.
+    func testToolbarSwipeFromEveryKeyTurnsPage() {
+        launchSeededSimulatorTerminal()
+        let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        XCTAssertTrue(keys[0].waitForExistence(timeout: 5))
+        for slot in 0..<3 {
+            swipeToolbarKeys(from: keys[slot], toLeft: true)
+            XCTAssertTrue(waitUntilOnShownPage(keys[3]), "A swipe from key \(slot) didn't turn the page")
+            XCTAssertNotEqual(keys[0].value as? String, "Armed", "A swipe from key \(slot) armed ctrl")
+            swipeToolbarKeys(from: keys[4], toLeft: false)
+            XCTAssertTrue(waitUntilOnShownPage(keys[0]))
+        }
+    }
+
+    /// A key answers anywhere in its frame, not only inside its smaller armed disc: its corners, outside the disc, arm
+    /// and disarm it.
+    func testToolbarKeyCornersOutsideTheDiscStillTap() {
+        launchSeededSimulatorTerminal()
+        let ctrl = app.buttons["terminal.toolbar-key.0"]
+        XCTAssertTrue(ctrl.waitForExistence(timeout: 5))
+        let frame = ctrl.frame
+        let inset: CGFloat = 1.5
+        XCTAssertGreaterThan(hypot(frame.width / 2 - inset, frame.height / 2 - inset), 16, "The corners aren't outside the disc")
+        let origin = ctrl.coordinate(withNormalizedOffset: .zero)
+
+        origin.withOffset(CGVector(dx: inset, dy: inset)).tap()
+        XCTAssertEqual(ctrl.value as? String, "Armed")
+        origin.withOffset(CGVector(dx: frame.width - inset, dy: frame.height - inset)).tap()
+        XCTAssertNotEqual(ctrl.value as? String, "Armed")
+    }
+
+    /// The first time the keys have a second page they glide toward it and back, or stay still under Reduce Motion
+    /// (REMUX_EXPECT_REDUCE_MOTION=1, with Reduce Motion set on the simulator beforehand).
+    func testToolbarFirstTimeGlide() {
+        let reduceMotion = ProcessInfo.processInfo.environment["REMUX_EXPECT_REDUCE_MOTION"] == "1"
+        // As on a first run: the glide hasn't played.
+        app.launchArguments = ["-terminal.toolbar.pagesGlideShown", "NO"]
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TEST_TOOLBAR_GLIDE": "1",
+                "REMUX_UI_TEST_INPUT_READY": "1",
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_NAME": "UI Test Server",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+                "REMUX_DEBUG_TMUX_SESSION": "ui-test",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        let session = app.descendants(matching: .any)["library.session.resume"].firstMatch
+        XCTAssertTrue(session.waitForExistence(timeout: 5))
+        session.tap()
+
+        // Sampled from the tap on, with no waits, which would let the glide pass unseen; it starts once the
+        // session's keys are usable.
+        let travel = sideTravel(of: app.buttons["terminal.toolbar-key.0"], for: 6)
+        if reduceMotion {
+            XCTAssertLessThan(travel, 1, "The keys moved under Reduce Motion")
+        } else {
+            XCTAssertGreaterThan(travel, 15, "The keys didn't glide")
+        }
+    }
+
+    /// Finds how long the first key must be held before Shortcuts opens, by pressing for longer each time.
+    func testFirstKeyHoldThresholdSweep() {
+        launchSeededSimulatorTerminal()
+        let durations = ProcessInfo.processInfo.environment["REMUX_HOLD_SWEEP_FINE"] == "1"
+            ? [0.34, 0.36, 0.38, 0.40, 0.42, 0.44, 0.46, 0.50]
+            : [0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70]
+        let lines = sweepFirstKeyHold(durations)
+        if durations.contains(0.30) {
+            XCTAssertTrue(lines.contains("0.30 s: no"), "a 0.3 s press opened Shortcuts")
+        }
+        XCTAssertTrue(lines.contains("0.50 s: opened"), "a 0.5 s hold didn't open Shortcuts")
+        let note = XCTAttachment(string: lines.joined(separator: "\n"))
+        note.name = "hold-sweep"
+        note.lifetime = .keepAlways
+        add(note)
+        print("HOLD_SWEEP\n" + lines.joined(separator: "\n"))
+    }
+
     func testSettingsConfigureAndResetToolbarKeys() {
         launchSimulatorApp()
         XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
@@ -1160,7 +1539,7 @@ final class RemuxAppUITests: XCTestCase {
             settingsForm.swipeUp()
         }
         XCTAssertTrue(toolbarKeys.waitForExistence(timeout: 2))
-        XCTAssertEqual(toolbarKeys.value as? String, "Control, Escape, Tab")
+        XCTAssertEqual(toolbarKeys.value as? String, "Page 1: Control, Escape, Tab. Page 2: Shift-Tab, Shift, Alt")
         attachScreenshot(named: "settings-toolbar-keys-row-default")
         toolbarKeys.tap()
 
@@ -1415,6 +1794,69 @@ final class RemuxAppUITests: XCTestCase {
         )
     }
 
+    /// The bytes the second key page sends, read raw in the pane: a swipe that starts on a key sends nothing, and
+    /// Shift-Tab, Alt, Shift and Alt+Return send what a terminal sends for them.
+    func testLiveToolbarKeyPagesSendTheirBytesWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("key-pages")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+        let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        XCTAssertTrue(keys[0].waitForExistence(timeout: 5))
+
+        // Each check reads what arrives within a few seconds in raw mode and prints a marker it builds at run
+        // time, which the harness then finds in the pane.
+        func expectBytes(_ marker: String, _ expected: String, seconds: Int = 6, then act: () -> Void) {
+            sendTerminalCommand(
+                "python3 -c 'import os,select,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); "
+                    + "tty.setraw(f); r=select.select([f],[],[],\(seconds))[0]; b=os.read(f,16) if r else b\"\"; "
+                    + "termios.tcsetattr(f,termios.TCSADRAIN,o); "
+                    + "print(\"REMUX_\(marker)_\" + (\"OK\" if b==\(expected) else \"BAD_\"+b.hex()))'"
+            )
+            // Raw mode discards what arrived before it, so the key waits until Python has had time to start.
+            RunLoop.current.run(until: Date().addingTimeInterval(2.5))
+            act()
+            RunLoop.current.run(until: Date().addingTimeInterval(Double(seconds) + 0.5))
+            recordLiveTmuxPaneCaptureExpectation(
+                sessionName: sessionName,
+                paneIndex: 1,
+                marker: "REMUX_\(marker)_OK",
+                includingHistory: true
+            )
+        }
+
+        expectBytes("SWIPE_SENDS_NOTHING", "b\"\"") {
+            swipeToolbarKeys(from: keys[1], toLeft: true)
+            XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        }
+        expectBytes("SHIFT_TAB", "b\"\\x1b[Z\"") {
+            keys[3].tap()
+        }
+        expectBytes("ALT_B", "b\"\\x1bb\"") {
+            keys[5].tap()
+            app.typeText("b")
+        }
+        expectBytes("SHIFT_A", "b\"A\"") {
+            keys[4].tap()
+            app.typeText("a")
+        }
+        expectBytes("ALT_RETURN", "b\"\\x1b\\r\"") {
+            keys[5].tap()
+            app.typeText("\n")
+        }
+        expectBytes("HOLD_SENDS_NOTHING", "b\"\"") {
+            keys[3].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
+            XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
+            app.otherElements["terminal.screen"]
+                .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+                .tap()
+        }
+    }
+
     func testLiveCustomizedToolbarKeysExecuteAndRetainSessionWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("toolbar-keys")
         defer {
@@ -1511,9 +1953,10 @@ final class RemuxAppUITests: XCTestCase {
         // The command prints its own run count, so only the arrow-up re-run
         // prints RUN_2. No `clear` in between: it also erases the scrollback.
         sendTerminalCommand(
-            "remux_arrow_runs=$((remux_arrow_runs + 1)); echo REMUX_ARROW_UP_RUN_$remux_arrow_runs"
+            "remux_arrow_runs=$((remux_arrow_runs + 1)); echo REMUX_ARROW_UP_RUN_$remux_arrow_runs",
+            keepingInHistory: true
         )
-        sendTerminalCommand("true")
+        sendTerminalCommand("true", keepingInHistory: true)
         arrowUp.tap()
         arrowUp.tap()
         waitForLiveTerminalInputReady(timeout: 10)
@@ -3568,6 +4011,7 @@ final class RemuxAppUITests: XCTestCase {
             app.buttons["terminal.keyboard"].tap()
             XCTAssertNotNil(waitForKeyboardPresence(false, label: "popup keyboard hide", timeout: 8))
         }
+        /// Shell commands start with a space, as `sendTerminalCommand`'s do, to stay out of the shell's history.
         func typeIntoPopup(_ text: String) {
             showKeyboard()
             app.typeText(text)
@@ -3597,7 +4041,7 @@ final class RemuxAppUITests: XCTestCase {
         }
         /// Asks the popup's shell for its size, typing with the keyboard up, and checks it says `grid`.
         func assertSttySays(_ grid: Grid, _ context: String) throws {
-            typeIntoPopup("clear; stty size\n")
+            typeIntoPopup(" clear; stty size\n")
             XCTAssertTrue(try screen(containing: "\(grid.rows) \(grid.columns)"), "stty didn't say \(grid.rows) \(grid.columns) \(context).")
         }
         /// The numbers on the other client's screen, which shows the popup's terminal.
@@ -3661,13 +4105,13 @@ final class RemuxAppUITests: XCTestCase {
         // A quiet popup keeps its attach past Herdr's minute for an idle background bridge.
         RunLoop.current.run(until: Date().addingTimeInterval(65))
         XCTAssertNotNil(try popupGrid("after a quiet minute") { $0 == full })
-        typeIntoPopup("clear; echo still-$((6*7))\n")
+        typeIntoPopup(" clear; echo still-$((6*7))\n")
         XCTAssertTrue(try screen(containing: "still-42"), "Typing after a quiet minute didn't reach the popup.")
         hideKeyboard()
 
         // A long press selects a word of the popup's terminal, as on a pane, and Copy copies it.
         UIPasteboard.general.string = "REMUX_HERDR_POPUP_COPY_SENTINEL"
-        typeIntoPopup("clear; echo popupword-$((6*7))\n")
+        typeIntoPopup(" clear; echo popupword-$((6*7))\n")
         XCTAssertTrue(try screen(containing: "popupword-42"), "echo didn't run in the popup.")
         hideKeyboard()
         content.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 20, dy: 8)).press(forDuration: 0.7)
@@ -3682,7 +4126,7 @@ final class RemuxAppUITests: XCTestCase {
 
         // Herdr encodes the phone's keys for the program's modes: an arrow reaches a program asking for
         // application cursor keys as one.
-        typeIntoPopup("clear; python3 -I ~/key_probe.py decckm ~/decckm.log\n")
+        typeIntoPopup(" clear; python3 -I ~/key_probe.py decckm ~/decckm.log\n")
         XCTAssertTrue(try screen(containing: "probe decckm ready"), "The key probe didn't start.")
         app.typeKey(.upArrow, modifierFlags: [])
         XCTAssertTrue(try screen(containing: #"b'\x1bOA'"#), "An arrow didn't reach the program as an application cursor key.")
@@ -3690,7 +4134,7 @@ final class RemuxAppUITests: XCTestCase {
         hideKeyboard()
 
         // A swipe scrolls the shell's history, and back.
-        typeIntoPopup("clear; seq 1 200\n")
+        typeIntoPopup(" clear; seq 1 200\n")
         XCTAssertTrue(try screen(containing: "199"), "seq didn't run in the popup.")
         hideKeyboard()
         let bottom = try XCTUnwrap(try numbersOnScreen().min())
@@ -3709,7 +4153,7 @@ final class RemuxAppUITests: XCTestCase {
         let composerField = app.textViews["terminal.composer.field"]
         XCTAssertTrue(composerField.waitForExistence(timeout: 3))
         composerField.tap()
-        composerField.typeText("clear; echo from-the-$((6*7))-composer")
+        composerField.typeText(" clear; echo from-the-$((6*7))-composer")
         app.buttons["terminal.composer.send"].tap()
         XCTAssertTrue(try screen(containing: "from-the-42-composer"), "The composer's message didn't reach the popup.")
         if composerField.exists { app.buttons["terminal.composer.toggle"].tap() }
@@ -3740,7 +4184,7 @@ final class RemuxAppUITests: XCTestCase {
         app.navigationBars.buttons.firstMatch.tap()
         backToSession()
         XCTAssertTrue(popup.waitForExistence(timeout: 20))
-        typeIntoPopup("clear; ls /\n")
+        typeIntoPopup(" clear; ls /\n")
         capture("f4k-popup-light-keyboard")
         hideKeyboard()
         capture("f4-popup-light")
@@ -3761,7 +4205,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNotNil(try popupGrid("back in portrait") { $0 == full })
 
         // The shell exits, the popup closes, and the panes come back with Tabs and Panes.
-        typeIntoPopup("exit\n")
+        typeIntoPopup(" exit\n")
         XCTAssertTrue(popup.waitForNonExistence(timeout: 15), "The popup stayed after its program exited.")
         hideKeyboard()
         assertNavigationHeld(false, "once the popup closed")
@@ -3911,7 +4355,7 @@ final class RemuxAppUITests: XCTestCase {
 
         waitForLiveTerminalInputReady(timeout: 10)
         app.typeText(
-            "for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do echo REMUX_KEYBOARD_RESIZE_RENDER_$n ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789; done\r"
+            " for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do echo REMUX_KEYBOARD_RESIZE_RENDER_$n ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789; done\r"
         )
         assertLiveTerminalScreenshotContainsRenderedContent()
 
@@ -4351,7 +4795,8 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     func testLiveComposerTypingPerfWhenConfigured() throws {
-        let transcript = "Profile the composer hypothesis path"
+        // It starts the submitted line, so it starts with a space, as typed commands do, to stay out of the history.
+        let transcript = " Profile the composer hypothesis path"
         // Enables the body-eval probe and its accessibility marker without
         // REMUX_UI_TESTING, which would swap in the fake UI-testing
         // transport and break the live SSH connection.
@@ -5106,6 +5551,7 @@ final class RemuxAppUITests: XCTestCase {
         )
     }
 
+    /// A hold then a sideways drag sends one arrow per column of travel, and nothing more while the thumb rests.
     func testLiveTerminalLongPressSteeringWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("steering")
         defer {
@@ -5116,29 +5562,19 @@ final class RemuxAppUITests: XCTestCase {
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 90)
 
-        let collector = [
-            #"tty=/dev/tty"#,
-            #"saved=$(stty -g <$tty) || exit"#,
-            #"trap "stty $saved <$tty" EXIT"#,
-            #"stty raw -echo <$tty"#,
-            #"data= chunk="#,
-            #"IFS= read -r -k 3 -t 8 chunk <$tty; status=$?; [[ -n $chunk ]] && data+=$chunk"#,
-            #"while (( status == 0 )); do chunk=; IFS= read -r -k 3 -t 0.6 chunk <$tty; status=$?; [[ -n $chunk ]] && data+=$chunk; done"#,
-            #"stty $saved <$tty || exit; trap - EXIT"#,
-            #"esc=$(printf "\033"); csi="${esc}[D"; ss3="${esc}OD"; rest=$data; count=0; valid=1"#,
-            #"while [[ -n $rest ]]; do if [[ $rest == ${csi}* ]]; then rest=${rest[4,-1]}; elif [[ $rest == ${ss3}* ]]; then rest=${rest[4,-1]}; else valid=0; break; fi; (( count++ )); done"#,
-            #"if (( valid && count >= 3 )); then print -r -- REMUX_STEER_REPEAT_OK; else hex=$(print -rn -- "$data" | od -An -tx1 | tr -d " \n"); print -r -- "REMUX_STEER_REPEAT_FAIL_$hex"; fi"#,
-        ].joined(separator: "; ")
-        sendTerminalCommand("zsh -fc '\(collector)'")
-        hideKeyboardIfPresent()
-
         let terminal = app.otherElements["terminal.screen"].firstMatch
         XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        sendTerminalCommand(arrowKeyCollector(name: "STEER", passes: "l == 4 && r + u + d == 0"))
+        hideKeyboardIfPresent()
+
+        // Four and a half columns: half a column clear of the fourth arrow and the fifth, as a synthesized drag can
+        // end a point or so off.
+        let travel = 4.5 * Self.columnTravel / terminal.frame.width
         terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.50))
             .press(
                 forDuration: 0.55,
                 thenDragTo: terminal.coordinate(
-                    withNormalizedOffset: CGVector(dx: 0.52, dy: 0.50)
+                    withNormalizedOffset: CGVector(dx: 0.60 - travel, dy: 0.50)
                 ),
                 withVelocity: .slow,
                 thenHoldForDuration: 0.90
@@ -5148,8 +5584,138 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_STEER_REPEAT_OK"
+            marker: "REMUX_STEER_OK"
         )
+    }
+
+    /// Past six rows the arrows repeat while the thumb rests, and turning back stops them at once: the last arrow
+    /// comes well before the thumb lifts a second later, and none goes back up a row the thumb didn't travel.
+    @MainActor
+    func testLiveTerminalFollowRepeatStopsOnTurningBackWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("follow-turn")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        sendTerminalCommand(arrowKeyCollector(name: "TURN", passes: "d >= 10 && u + l + r == 0 && span < 2000"))
+        hideKeyboardIfPresent()
+
+        let frame = terminal.frame
+        let start = CGPoint(x: frame.midX, y: frame.minY + frame.height * 0.3)
+        try TouchPath.play(from: start, [
+            .hold(0.6),
+            .move(to: CGPoint(x: start.x, y: start.y + 130), over: 0.4),
+            .hold(1.2),
+            .move(to: CGPoint(x: start.x, y: start.y + 118), over: 0.1),
+            .hold(1.0),
+        ])
+
+        RunLoop.current.run(until: Date().addingTimeInterval(4))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_TURN_OK"
+        )
+    }
+
+    /// Within a second of letting go, a touch carries the drag on without the hold; a tap in that second ends it, so
+    /// a drag after the tap sends nothing.
+    @MainActor
+    func testLiveTerminalFollowRegripCarriesOnUntilATapWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("follow-regrip")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        sendTerminalCommand(arrowKeyCollector(name: "REGRIP", passes: "d == 5 && u + l + r == 0"))
+        hideKeyboardIfPresent()
+
+        let frame = terminal.frame
+        let first = CGPoint(x: frame.midX, y: frame.minY + frame.height * 0.35)
+        let second = CGPoint(x: frame.midX, y: frame.minY + frame.height * 0.3)
+        // 3.25 rows with the hold, then 2.25 rows re-gripped without it.
+        try TouchPath.play(from: first, [.hold(0.6), .move(to: CGPoint(x: first.x, y: first.y + 52), over: 0.3)])
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try TouchPath.play(from: second, [.move(to: CGPoint(x: second.x, y: second.y + 36), over: 0.3)])
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try TouchPath.play(from: second, [.hold(0.05)])
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try TouchPath.play(from: second, [.move(to: CGPoint(x: second.x + 40, y: second.y), over: 0.3)])
+
+        RunLoop.current.run(until: Date().addingTimeInterval(4))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_REGRIP_OK"
+        )
+    }
+
+    /// Holding the keyboard's space bar and sliding sends arrows the same way. iOS reports a cursor point rather than
+    /// the thumb, so this checks the direction and that the slide steps, not an exact count.
+    @MainActor
+    func testLiveSpaceBarFollowSendsArrowsWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("follow-space")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        sendTerminalCommand(arrowKeyCollector(name: "SPACE", passes: "r >= 3 && l + u + d == 0"))
+        let space = app.keyboards.keys["space"].firstMatch
+        XCTAssertTrue(space.waitForExistence(timeout: 8))
+        let start = CGPoint(x: space.frame.midX, y: space.frame.midY)
+        try TouchPath.play(from: start, [
+            .hold(1.0),
+            .move(to: CGPoint(x: start.x + 60, y: start.y), over: 0.4),
+            .hold(0.6),
+        ])
+
+        RunLoop.current.run(until: Date().addingTimeInterval(4))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_SPACE_OK"
+        )
+    }
+
+    /// The app sends one arrow per this much sideways travel.
+    private static let columnTravel: CGFloat = 7.8
+
+    /// A program for the pane that reads arrow keys for as long as they keep coming and prints a dot for each, as a
+    /// list redraws its selection. When the keys stop it prints REMUX_<name>_D…_U…_L…_R…_SPAN… (milliseconds from the
+    /// first key to the last), and REMUX_<name>_OK when `passes`, a zsh arithmetic test over d, u, l, r and span,
+    /// holds. The typed command stays in the pane the harness checks, so the marker is built at run time and the
+    /// command's own text can't satisfy the check.
+    private func arrowKeyCollector(name: String, passes: String) -> String {
+        let script = [
+            #"zmodload zsh/datetime"#,
+            #"tty=/dev/tty"#,
+            #"saved=$(stty -g <$tty) || exit"#,
+            #"trap "stty $saved <$tty" EXIT"#,
+            #"stty raw -echo <$tty"#,
+            #"d=0 u=0 l=0 r=0 first= last= wait=30"#,
+            #"while :; do chunk=; IFS= read -r -k 3 -t $wait chunk <$tty || break; t=$EPOCHREALTIME; case ${chunk[3]} in A) (( u++ ));; B) (( d++ ));; C) (( r++ ));; D) (( l++ ));; esac; [[ -z $first ]] && first=$t; last=$t; printf . >$tty; wait=2.5; done"#,
+            #"stty $saved <$tty; trap - EXIT"#,
+            #"span=0; [[ -n $first ]] && span=$(( (last - first) * 1000 )); span=${span%.*}"#,
+            "print -r -- REMUX_\(name)_D${d}_U${u}_L${l}_R${r}_SPAN${span}",
+            "if (( \(passes) )); then ok=O; ok+=K; print -r -- REMUX_\(name)_$ok; fi",
+        ].joined(separator: "; ")
+        return "zsh -fc '\(script)'"
     }
 
     func testLiveTmuxPrefixEntersCopyModeWhenConfigured() throws {
@@ -5708,8 +6274,76 @@ final class RemuxAppUITests: XCTestCase {
 
     private func selectToolbarKey(_ title: String) {
         let option = app.collectionViews.buttons[title].firstMatch
-        XCTAssertTrue(option.waitForExistence(timeout: 2))
+        var swipes = 0
+        while !(option.waitForExistence(timeout: 1) && option.isHittable), swipes < 3 {
+            app.collectionViews.firstMatch.swipeUp()
+            swipes += 1
+        }
+        XCTAssertTrue(option.isHittable)
         option.tap()
+    }
+
+    /// Presses the first key for each duration and notes whether Shortcuts opened, closing it again each time.
+    private func sweepFirstKeyHold(_ durations: [Double]) -> [String] {
+        let first = app.buttons["terminal.toolbar-key.0"]
+        var lines: [String] = []
+        for duration in durations {
+            first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: duration)
+            let opened = app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 0.8)
+            lines.append(String(format: "%.2f s: %@", duration, opened ? "opened" : "no"))
+            if opened {
+                app.otherElements["terminal.screen"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+                _ = app.buttons["terminal.shortcuts.settings"].waitForNonExistence(timeout: 2)
+            } else if first.value as? String == "Armed" {
+                first.tap()
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        }
+        return lines
+    }
+
+    /// How far `element` moves sideways from where it first shows, sampled for `duration` seconds.
+    private func sideTravel(of element: XCUIElement, for duration: TimeInterval) -> CGFloat {
+        var rest: CGFloat?
+        var travel: CGFloat = 0
+        let deadline = Date().addingTimeInterval(duration)
+        while Date() < deadline {
+            guard element.exists else { continue }
+            let x = element.frame.minX
+            if let rest {
+                travel = max(travel, abs(x - rest))
+            } else {
+                rest = x
+            }
+        }
+        XCTAssertNotNil(rest, "\(element) never showed")
+        return travel
+    }
+
+    /// A quick flick from the key's centre. It stops short of the screen's edge: the first key sits near it, and a
+    /// drag that runs off the screen doesn't always reach the scroll view.
+    private func swipeToolbarKeys(from key: XCUIElement, toLeft: Bool) {
+        let start = key.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let distance = toLeft ? min(90, key.frame.midX - 8) : 90
+        let end = start.withOffset(CGVector(dx: toLeft ? -distance : distance, dy: 0))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+    }
+
+    /// XCUITest counts a key clipped by the key group as hittable, so a key is on show when its centre is
+    /// inside the group.
+    private func isOnShownKeyPage(_ key: XCUIElement) -> Bool {
+        let group = app.scrollViews["terminal.toolbar-keys"]
+        guard key.exists, group.exists else { return false }
+        return group.frame.contains(CGPoint(x: key.frame.midX, y: key.frame.midY))
+    }
+
+    private func waitUntilOnShownPage(_ key: XCUIElement, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isOnShownKeyPage(key) { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return false
     }
 
     private func launchLiveSSHAppIfConfigured(
@@ -6959,7 +7593,11 @@ final class RemuxAppUITests: XCTestCase {
         tapPickerButton(identifier: confirmIdentifier, fallbackLabel: confirmLabel)
     }
 
-    private func sendTerminalCommand(_ command: String) {
+    /// Types a command and Return. The live server's shell can be the developer's own, so the command starts with a
+    /// space, which a shell that ignores such commands keeps out of its history: otherwise every test command lands
+    /// there and comes back as a suggestion while later tests type. A test that recalls a command with the arrow keys
+    /// keeps it in history, as a left-out command would leave the arrows to recall one of the developer's.
+    private func sendTerminalCommand(_ command: String, keepingInHistory: Bool = false) {
         waitForLiveTerminalInputReady(timeout: 10)
 
         if !app.keyboards.firstMatch.exists {
@@ -6969,7 +7607,7 @@ final class RemuxAppUITests: XCTestCase {
             XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
         }
 
-        app.typeText("\(command)\n")
+        app.typeText("\(keepingInHistory ? "" : " ")\(command)\n")
     }
 
     private func hideKeyboardIfPresent() {
