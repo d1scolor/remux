@@ -4985,6 +4985,25 @@ final class HerdrScreenModelTests: XCTestCase {
         XCTAssertEqual(scroll.scrollState, GhosttySurfaceScrollState(total: .max, offset: .max - 50, len: 40, cellOffset: 0))
     }
 
+    func testRepeatedForwardedDragsGetFreshScrollRange() async throws {
+        let harness = await makeHarness()
+        _ = try await shownSession(harness, mouseReporting: true, alternateScreen: true)
+        let surface = try XCTUnwrap(harness.model.paneSurface("w1:p1")?.renderer.managedSurface)
+        let container = GhosttyPaneScrollContainerView(frame: CGRect(x: 0, y: 0, width: 300, height: 100))
+        container.update(surface: surface, displayScale: 2,
+                         submitRouteForwardedMouseScroll: { _, _ in .sent },
+                         submitRouteForwardedMousePosition: { _, _, _ in .sent })
+        container.layoutIfNeeded()
+        let driver = try XCTUnwrap(container.subviews.compactMap { $0 as? GhosttyScrollPhysicsView }.first)
+        for edge in [CGFloat.zero, driver.contentSize.height - driver.bounds.height] {
+            driver.contentOffset.y = edge
+            container.scrollViewWillBeginDragging(driver)
+            XCTAssertEqual(driver.contentOffset.y, driver.centeredContentOffsetY)
+            XCTAssertGreaterThan(driver.centeredContentOffsetY, 0)
+            container.scrollViewDidEndDragging(driver, willDecelerate: true)
+        }
+    }
+
     func testProgramScrollingEndsOnlyItsPanesSelectionWhileHistoryScrollingKeepsIt() async throws {
         for (mouseReporting, alternateScreen) in [(false, false), (true, false), (false, true), (true, true)] {
             let harness = await makeHarness()
