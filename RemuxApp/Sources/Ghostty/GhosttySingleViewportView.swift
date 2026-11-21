@@ -970,7 +970,10 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         _ gestureRecognizer: UIGestureRecognizer,
         shouldReceive touch: UITouch
     ) -> Bool {
-        _ = gestureRecognizer
+        if gestureRecognizer === surfaceTapRecognizer,
+           let (_, _, container) = visibleSurface(at: touch.location(in: self)) {
+            container.interruptForwardedCoast()
+        }
         guard let touchedView = touch.view else { return true }
         return !touchedView.isDescendant(of: startSelectionHandle)
             && !touchedView.isDescendant(of: endSelectionHandle)

@@ -268,9 +268,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         if scrollView === physicsScrollView {
-            if physicsScrollView.isDecelerating {
-                lastMomentumCatchAt = CACurrentMediaTime()
-            }
+            lastMomentumCatchAt = nil
             beginPhysicsGesture()
             return
         }
@@ -294,6 +292,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         if scrollView === physicsScrollView {
+            guard !physicsScrollView.isDragging else { return }
             // Deceleration ending while a touch is tracking means that
             // touch caught the fling (a natural end has no touch).
             if physicsScrollView.isTracking {
@@ -341,6 +340,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         scrollView.addSubview(contentView)
 
         physicsScrollView.delegate = self
+        physicsScrollView.decelerationRate = .fast
         physicsScrollView.backgroundColor = .clear
         physicsScrollView.contentInsetAdjustmentBehavior = .never
         physicsScrollView.isDirectionalLockEnabled = true
@@ -608,6 +608,8 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         physicsTailCutoff.reset()
         physicsVelocityGain.reset()
         physicsPeakMultiplier = 1
+        // A caught coast can skip the usual idle recenter between swipes.
+        recenterPhysicsScroll()
         physicsReportedOffsetY = physicsScrollView.contentOffset.y
         isPhysicsGestureActive = true
     }
@@ -715,6 +717,14 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         }
     }
 
+    /// Stop on contact, before the next pan has crossed its recognition threshold.
+    func interruptForwardedCoast() {
+        guard physicsScrollView.isDecelerating else { return }
+        lastMomentumCatchAt = CACurrentMediaTime()
+        endPhysicsGesture(phase: .cancelled)
+        physicsScrollView.stopScrollingAndZooming()
+    }
+
     /// True exactly once for the tap produced by a fling-catch touch;
     /// consuming keeps an immediate deliberate follow-up tap clickable.
     func consumeMomentumCatchTap(at now: TimeInterval = CACurrentMediaTime()) -> Bool {
@@ -729,6 +739,10 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
               !physicsScrollView.isDecelerating
         else { return }
 
+        recenterPhysicsScroll()
+    }
+
+    private func recenterPhysicsScroll() {
         let centered = CGPoint(x: 0, y: physicsScrollView.centeredContentOffsetY)
         guard physicsScrollView.contentOffset != centered else { return }
         isRecenteringPhysicsScroll = true
